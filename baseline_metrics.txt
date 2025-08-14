@@ -1,0 +1,29 @@
+BASELINE PERFORMANCE METRICS
+Date: 8/14/2025
+Version: Original TTWVolumeFlow.cs (German comments)
+
+TEST CONFIGURATION:
+- NinjaTrader 8
+- Instrument: ES 09-25
+- Timeframe: 1-minute
+- Data: 5859 bars
+- Calculate Mode: OnPriceChange
+- Parameters: Walter's defaults (VM=1.5, VP=20, ATR=14, ATR Trail=20/3.5)
+
+BASELINE RESULTS:
+- Average Time per Bar: 87 microseconds
+- Peak Memory Usage: 12.87 MB
+- Total Bars Processed: 5859
+- Test Duration: 49.35 seconds
+
+PERFORMANCE DEGRADATION OBSERVED:
+- First 1000 bars: 47 microseconds
+- Last 1000 bars: 91 microseconds  
+- Degradation: 93% slower (indicates memory/allocation issues)
+
+KEY INEFFICIENCIES IDENTIFIED:
+1. Multiple volumeSMA[0] accesses per bar
+2. StringBuilder allocations every update
+3. RemoveDrawObject called unnecessarily
+4. ATR calculations on every tick
+5. String concatenation in tags
