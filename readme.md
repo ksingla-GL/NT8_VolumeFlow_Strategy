@@ -79,7 +79,7 @@ ATR Trailing Multiplier: 3.5
 ## Usage Examples
 
 ### Basic Setup
-```csharp
+
 // Add to chart with default settings
 TTWVolumeFlowOptimized indicator = TTWVolumeFlowOptimized();
 Strategy Integration
