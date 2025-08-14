@@ -76,37 +76,17 @@ Enable ATR Trailing Filter: True
 ATR Trailing Period: 20
 ATR Trailing Multiplier: 3.5
 
-## Usage Examples
-
-### Basic Setup
-
-// Add to chart with default settings
-TTWVolumeFlowOptimized indicator = TTWVolumeFlowOptimized();
-Strategy Integration
-csharp// Use in a NinjaScript Strategy
-if (TTWVolumeFlowOptimized().BullishVolumeFlow[0] != double.NaN)
-{
-    // Bullish volume spike detected
-    EnterLong();
-}
- Development
-Optimization Techniques Applied
-
-Value Caching: Eliminated redundant indicator calculations
-Memory Pooling: Reused drawing objects instead of create/destroy
-State Management: Optimized bar update logic
-Collection Optimization: Dictionary-based drawing management
-Series Configuration: Optimized MaximumBarsLookBack settings
-
 ## Building from Source
 
 Clone the repository
 bashgit clone https://github.com/ksingla-GL/NT8_VolumeFlow_Strategy.git
 
 Open TTWVolumeFlow_Optimized.cs in NinjaScript Editor
+
 Make modifications and press F5 to compile
 
 Performance Testing
+
 To run performance benchmarks:
 
 The indicator includes built-in performance monitoring
