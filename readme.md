@@ -76,28 +76,15 @@ Enable ATR Trailing Filter: True
 ATR Trailing Period: 20
 ATR Trailing Multiplier: 3.5
 
-## Building from Source
-
-Clone the repository
-bashgit clone https://github.com/ksingla-GL/NT8_VolumeFlow_Strategy.git
-
-Open TTWVolumeFlow_Optimized.cs in NinjaScript Editor
-
-Make modifications and press F5 to compile
-
-Performance Testing
-
-To run performance benchmarks:
-
-The indicator includes built-in performance monitoring
-Check the NinjaTrader Output Window for metrics
-Results show after removing the indicator from chart
-
 ## Sample output:
 === PERFORMANCE TEST RESULTS (OPTIMIZED) ===
+
 Test Duration: 43.70 seconds
+
 Total Bars Processed: 5879
+
 Average Time per Bar: 2 microseconds
+
 Peak Memory Usage: 3.03 MB
 
 ## Project Milestones
