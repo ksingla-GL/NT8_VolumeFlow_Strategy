@@ -21,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
     /// <summary>
     /// TTWVolumeFlow - Detects significant volume spikes and marks potential stop/reversal zones.
     /// Optional: ATR Trailing Stop Filter, Alerts, Session Filter, Multi-Series Protection, ATR Stop Plots.
-    /// OPTIMIZED VERSION - M2 Core Optimization
+    /// OPTIMIZED VERSION - M2.5 with Harry's ATR Trailing Stop Logic
     /// </summary>
     [Description("Detects significant volume spikes and marks potential stop/reversal zones. Optional with ATR Trailing Stop Filter.")]
     public class TTWVolumeFlowOptimized : Indicator
@@ -31,22 +31,26 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         private SMA volumeSMA;
         private ATR atr;
         private ATR atrTrailing;
-        
+
         // Font
         private NinjaTrader.Gui.Tools.SimpleFont labelFont;
-        
-        // ATR Trailing Stop series
+
+        // ATR Trailing Stop series (Harry's approach)
         private Series<double> preliminaryTrend;
         private Series<double> trend;
         private Series<double> currentStopLong;
         private Series<double> currentStopShort;
-        
+
         // Alert State (-1 bear, 0 none, 1 bull)
         private Series<int> signalState;
-        
+
         // Session bar counter
         private int sessionBarCount;
-        
+
+        // ATR Stop tracking
+        private bool stoppedOut;
+        private double trailingAmount;
+
         // PERFORMANCE OPTIMIZATIONS - Cached values
         private double cachedVolumeSMA;
         private double cachedATR;
@@ -54,21 +58,21 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         private double cachedCurrentVolume;
         private bool cacheValid;
         private int lastBarCached = -1;
-        
+
         // Cached bar metrics
         private double cachedOpen;
         private double cachedClose;
         private double cachedHigh;
         private double cachedLow;
         private double cachedBarHeight;
-        
+
         // Drawing optimization
         private Dictionary<int, string[]> activeDrawings;
         private const string BULL_SIGNAL = "BullVF";
         private const string BEAR_SIGNAL = "BearVF";
         private const string BULL_LABEL = "BullLbl";
         private const string BEAR_LABEL = "BearLbl";
-        
+
         // PERFORMANCE TESTING - REMOVE AFTER OPTIMIZATION VERIFICATION
         private System.Diagnostics.Stopwatch perfTimer;
         private long totalExecutionTime;
@@ -171,8 +175,8 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         public double AtrTrailingMultiplier { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show ATR Stops", Description = "Display calculated ATR stops as lines", Order = 4, GroupName = "06. ATR Trailing Stop")]
-        public bool ShowAtrStops { get; set; }
+        [Display(Name = "Show Stop Line", Description = "Display ATR trailing stop line", Order = 4, GroupName = "06. ATR Trailing Stop")]
+        public bool ShowStopLine { get; set; }
 
         [NinjaScriptProperty]
         [XmlIgnore]
@@ -206,113 +210,119 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         [NinjaScriptProperty]
         [Display(Name = "Alert Sound", Description = "Sound file (e.g., Alert1.wav)", Order = 2, GroupName = "08. Alerts")]
         public string AlertSound { get; set; }
+
+        // Public access to trend for strategies
+        [Browsable(false)]
+        [XmlIgnore]
+        public Series<double> Trend
+        {
+            get { return trend; }
+        }
         #endregion
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Name                        = "TTWVolumeFlowOptimized";
-                Description                 = "Detects significant volume spikes; optional with ATR Trailing Stop Filter.";
-                Calculate                   = Calculate.OnPriceChange;
-                IsOverlay                   = true;
-                DisplayInDataBox            = true;
-                DrawOnPricePanel            = true;
-                DrawHorizontalGridLines     = true;
-                DrawVerticalGridLines       = true;
-                PaintPriceMarkers           = true;
-                ScaleJustification          = ScaleJustification.Right;
-                IsSuspendedWhileInactive    = true;
+                Name = "TTWVolumeFlowOptimized";
+                Description = "Detects significant volume spikes; optional with ATR Trailing Stop Filter.";
+                Calculate = Calculate.OnPriceChange;
+                IsOverlay = true;
+                DisplayInDataBox = true;
+                DrawOnPricePanel = true;
+                DrawHorizontalGridLines = true;
+                DrawVerticalGridLines = true;
+                PaintPriceMarkers = true;
+                ScaleJustification = ScaleJustification.Right;
+                IsSuspendedWhileInactive = true;
 
                 // Defaults
-                VolumeMultiplier            = 1.5;
-                VolumePeriod                = 20;
-                AtrPeriod                   = 14;
-                AtrMultiplier               = 0.75;
-                ArrowOffsetFactor           = 0.2;
-                VolumeOffsetFactor          = 0.3;
-                ShowLabel                   = true;
-                SymbolType                  = 0;
-                SymbolSize                  = 3;
-                BullishColor                = Brushes.Green;
-                BearishColor                = Brushes.Red;
+                VolumeMultiplier = 1.5;
+                VolumePeriod = 20;
+                AtrPeriod = 14;
+                AtrMultiplier = 0.75;
+                ArrowOffsetFactor = 0.2;
+                VolumeOffsetFactor = 0.3;
+                ShowLabel = true;
+                SymbolType = 0;
+                SymbolSize = 3;
+                BullishColor = Brushes.Green;
+                BearishColor = Brushes.Red;
 
-                LabelFontFamily             = "Arial";
-                LabelFontSize               = 12;
-                LabelFontBold               = true;
+                LabelFontFamily = "Arial";
+                LabelFontSize = 12;
+                LabelFontBold = true;
 
-                EnableAtrTrailingFilter     = false;
-                AtrTrailingPeriod           = 10;
-                AtrTrailingMultiplier       = 3.5;
-                ShowAtrStops                = false;
-                AtrLongStopColor            = Brushes.DodgerBlue;
-                AtrShortStopColor           = Brushes.OrangeRed;
+                EnableAtrTrailingFilter = true;  // Default to true per client request
+                AtrTrailingPeriod = 20;    // Client specified default
+                AtrTrailingMultiplier = 3.5;   // Client specified default
+                ShowStopLine = true;
+                AtrLongStopColor = Brushes.DodgerBlue;
+                AtrShortStopColor = Brushes.OrangeRed;
 
-                ProcessSecondarySeries      = false;
-                IgnoreFirstBarsOfSession    = 0;
+                ProcessSecondarySeries = false;
+                IgnoreFirstBarsOfSession = 0;
 
-                EnableAlerts                = false;
-                AlertSound                  = "Alert1.wav";
+                EnableAlerts = false;
+                AlertSound = "Alert1.wav";
 
                 // Initialize collections
-                activeDrawings              = new Dictionary<int, string[]>(256);
+                activeDrawings = new Dictionary<int, string[]>(256);
 
                 // Plots
                 AddPlot(new Stroke(BullishColor, 2), PlotStyle.Dot, "BullishVolumeFlow");
                 AddPlot(new Stroke(BearishColor, 2), PlotStyle.Dot, "BearishVolumeFlow");
-                AddPlot(Brushes.Transparent, "AtrLongStop");
-                AddPlot(Brushes.Transparent, "AtrShortStop");
+                AddPlot(new Stroke(AtrLongStopColor, 2), PlotStyle.Line, "StopLine");
             }
             else if (State == State.Configure)
             {
-                volumeSMA   = SMA(Volume, VolumePeriod);
-                atr         = ATR(AtrPeriod);
+                volumeSMA = SMA(Volume, VolumePeriod);
+                atr = ATR(AtrPeriod);
                 atrTrailing = (AtrTrailingPeriod != AtrPeriod) ? ATR(AtrTrailingPeriod) : atr;
             }
             else if (State == State.DataLoaded)
             {
-                labelFont        = new NinjaTrader.Gui.Tools.SimpleFont(LabelFontFamily, LabelFontSize) { Bold = LabelFontBold };
+                labelFont = new NinjaTrader.Gui.Tools.SimpleFont(LabelFontFamily, LabelFontSize) { Bold = LabelFontBold };
 
                 // Use optimized MaximumBarsLookBack settings
                 preliminaryTrend = new Series<double>(this, MaximumBarsLookBack.TwoHundredFiftySix);
-                trend            = new Series<double>(this, MaximumBarsLookBack.TwoHundredFiftySix);
-                currentStopLong  = new Series<double>(this, MaximumBarsLookBack.TwoHundredFiftySix);
+                trend = new Series<double>(this, MaximumBarsLookBack.Infinite);
+                currentStopLong = new Series<double>(this, MaximumBarsLookBack.TwoHundredFiftySix);
                 currentStopShort = new Series<double>(this, MaximumBarsLookBack.TwoHundredFiftySix);
-                signalState      = new Series<int>(this, MaximumBarsLookBack.TwoHundredFiftySix);
+                signalState = new Series<int>(this, MaximumBarsLookBack.TwoHundredFiftySix);
 
-                // Set ATR stop plot colors
-                Plots[2].Brush   = AtrLongStopColor;
-                Plots[3].Brush   = AtrShortStopColor;
-                
+                // Set stop line plot color dynamically
+                Plots[2].Brush = AtrLongStopColor;
+
                 // PERFORMANCE TESTING INIT
                 perfTimer = new System.Diagnostics.Stopwatch();
                 startMemory = GC.GetTotalMemory(true);
                 testStartTime = DateTime.Now;
-                Print("=== PERFORMANCE TEST STARTED (OPTIMIZED) ===");
+                Print("=== PERFORMANCE TEST STARTED (OPTIMIZED with Harry's ATR) ===");
             }
             else if (State == State.Terminated)
             {
                 // PERFORMANCE TESTING OUTPUT
                 if (executionCount > 0)
                 {
-                    Print("=== PERFORMANCE TEST RESULTS (OPTIMIZED) ===");
+                    Print("=== PERFORMANCE TEST RESULTS (OPTIMIZED with Harry's ATR) ===");
                     Print($"Test Duration: {(DateTime.Now - testStartTime).TotalSeconds:F2} seconds");
                     Print($"Total Bars Processed: {executionCount}");
                     Print($"Average Time per Bar: {totalExecutionTime / executionCount / 10} microseconds");
                     Print($"Peak Memory Usage: {peakMemory / 1024.0 / 1024.0:F2} MB");
                     Print($"Final Memory Usage: {(GC.GetTotalMemory(false) - startMemory) / 1024.0 / 1024.0:F2} MB");
-                    Print("============================================");
+                    Print("=============================================");
                 }
-                
+
                 // Cleanup
-                labelFont         = null;
-                preliminaryTrend  = null;
-                trend             = null;
-                currentStopLong   = null;
-                currentStopShort  = null;
-                signalState       = null;
+                labelFont = null;
+                preliminaryTrend = null;
+                trend = null;
+                currentStopLong = null;
+                currentStopShort = null;
+                signalState = null;
                 activeDrawings?.Clear();
-                activeDrawings    = null;
+                activeDrawings = null;
             }
         }
 
@@ -321,10 +331,20 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             // START PERFORMANCE MEASUREMENT
             perfTimer.Restart();
             long memBefore = GC.GetTotalMemory(false);
-            
+
             // Multi-Series: only process primary series if not allowed
             if (!ProcessSecondarySeries && BarsInProgress != 0)
                 return;
+
+            // Initialize trend on first bars
+            if (CurrentBar < 2)
+            {
+                preliminaryTrend[0] = 1.0;
+                trend[0] = 1.0;
+                Values[2][0] = Close[0];
+                PlotBrushes[2][0] = Brushes.Transparent;
+                return;
+            }
 
             // Session counting - optimized
             if (IsFirstTickOfBar)
@@ -333,15 +353,16 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                     sessionBarCount = 0;
                 sessionBarCount++;
                 cacheValid = false; // Invalidate cache on new bar
+                stoppedOut = false; // Reset stopped out flag
             }
 
             // Minimum bars check
             int requiredBars = Math.Max(VolumePeriod, Math.Max(AtrPeriod, AtrTrailingPeriod));
             if (CurrentBar < requiredBars || sessionBarCount <= IgnoreFirstBarsOfSession)
             {
-                SetPlotValues(double.NaN, double.NaN, double.NaN, double.NaN);
+                SetPlotValues(double.NaN, double.NaN, Close[0]);
                 CleanupBarDrawings(CurrentBar);
-                
+
                 // END PERFORMANCE MEASUREMENT
                 RecordPerformanceMetrics(memBefore);
                 return;
@@ -350,18 +371,81 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             // Cache values once per bar
             UpdateCachedValues();
 
-            // ATR Trailing Stop update (optimized to run once per bar)
-            if (EnableAtrTrailingFilter && IsFirstTickOfBar && CurrentBar > 2)
+            // HARRY'S ATR TRAILING STOP LOGIC - INTEGRATED
+            if (EnableAtrTrailingFilter)
             {
-                CalculateAtrTrailingStop();
+                if (IsFirstTickOfBar)
+                {
+                    // Calculate trailing amount
+                    double offset = Math.Max(TickSize, atrTrailing[1]);
+                    trailingAmount = AtrTrailingMultiplier * offset;
+
+                    // Update stops based on trend (Harry's step-ladder approach)
+                    if (preliminaryTrend[1] > 0.5) // Uptrend
+                    {
+                        // Long stop can only move up or stay the same
+                        currentStopLong[0] = Math.Max(currentStopLong[1], Math.Min(Close[1] - trailingAmount, Close[1] - TickSize));
+                        currentStopShort[0] = Close[1] + trailingAmount;
+                    }
+                    else // Downtrend
+                    {
+                        // Short stop can only move down or stay the same
+                        currentStopShort[0] = Math.Min(currentStopShort[1], Math.Max(Close[1] + trailingAmount, Close[1] + TickSize));
+                        currentStopLong[0] = Close[1] - trailingAmount;
+                    }
+                }
+
+                // Check for trend reversal (only one reversal per bar allowed)
+                if (Calculate == Calculate.OnPriceChange && !stoppedOut)
+                {
+                    if (preliminaryTrend[1] > 0.5 && Low[0] < currentStopLong[0])
+                    {
+                        preliminaryTrend[0] = -1.0;
+                        stoppedOut = true;
+                    }
+                    else if (preliminaryTrend[1] < -0.5 && High[0] > currentStopShort[0])
+                    {
+                        preliminaryTrend[0] = 1.0;
+                        stoppedOut = true;
+                    }
+                    else
+                    {
+                        preliminaryTrend[0] = preliminaryTrend[1];
+                    }
+                }
+                else if (Calculate == Calculate.OnBarClose)
+                {
+                    if (preliminaryTrend[1] > 0.5 && Close[0] < currentStopLong[0])
+                        preliminaryTrend[0] = -1.0;
+                    else if (preliminaryTrend[1] < -0.5 && Close[0] > currentStopShort[0])
+                        preliminaryTrend[0] = 1.0;
+                    else
+                        preliminaryTrend[0] = preliminaryTrend[1];
+                }
+
+                // Update confirmed trend
+                if (Calculate == Calculate.OnBarClose)
+                    trend[0] = preliminaryTrend[0];
+                else if (IsFirstTickOfBar)
+                    trend[0] = preliminaryTrend[1];
+                else
+                    trend[0] = preliminaryTrend[0];
+            }
+            else
+            {
+                // If ATR filter disabled, set neutral trend
+                trend[0] = 0;
+                preliminaryTrend[0] = 0;
             }
 
             // Early exit checks with cached values
             if (cachedVolumeSMA <= 0 || double.IsNaN(cachedVolumeSMA))
             {
-                SetPlotValues(double.NaN, double.NaN, double.NaN, double.NaN);
+                SetPlotValues(double.NaN, double.NaN,
+                    EnableAtrTrailingFilter && ShowStopLine ?
+                        (trend[0] > 0.5 ? currentStopLong[0] : currentStopShort[0]) : double.NaN);
                 CleanupBarDrawings(CurrentBar);
-                
+
                 // END PERFORMANCE MEASUREMENT
                 RecordPerformanceMetrics(memBefore);
                 return;
@@ -369,31 +453,52 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
 
             // Core logic with cached values
             bool isVolumeSpike = cachedCurrentVolume >= cachedVolumeSMA * VolumeMultiplier;
-            
+
             bool isBullishStop = false;
             bool isBearishStop = false;
-            
+
             if (isVolumeSpike)
             {
                 double atrThreshold = AtrMultiplier * cachedATR;
                 isBullishStop = (cachedClose > cachedOpen + atrThreshold);
                 isBearishStop = (cachedClose < cachedOpen - atrThreshold);
-                
+
                 // Apply ATR Trailing Filter if enabled
                 if (EnableAtrTrailingFilter && CurrentBar > 2)
                 {
+                    // Only allow signals aligned with the trend
                     double currentTrend = trend[0];
-                    isBullishStop = isBullishStop && currentTrend > 0.5;
-                    isBearishStop = isBearishStop && currentTrend < -0.5;
+                    if (currentTrend > 0.5)
+                    {
+                        isBearishStop = false; // No bearish signals in uptrend
+                    }
+                    else if (currentTrend < -0.5)
+                    {
+                        isBullishStop = false; // No bullish signals in downtrend
+                    }
                 }
             }
 
             // Set plot values efficiently
+            double stopLineValue = double.NaN;
+            if (EnableAtrTrailingFilter && ShowStopLine)
+            {
+                if (trend[0] > 0.5)
+                {
+                    stopLineValue = currentStopLong[0];
+                    PlotBrushes[2][0] = AtrLongStopColor;
+                }
+                else if (trend[0] < -0.5)
+                {
+                    stopLineValue = currentStopShort[0];
+                    PlotBrushes[2][0] = AtrShortStopColor;
+                }
+            }
+
             SetPlotValues(
                 isBullishStop ? cachedLow - 2 * TickSize : double.NaN,
                 isBearishStop ? cachedHigh + 2 * TickSize : double.NaN,
-                EnableAtrTrailingFilter && ShowAtrStops ? currentStopLong[0] : double.NaN,
-                EnableAtrTrailingFilter && ShowAtrStops ? currentStopShort[0] : double.NaN
+                stopLineValue
             );
 
             // Drawing logic - optimized
@@ -412,20 +517,20 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 int newState = isBullishStop ? 1 : (isBearishStop ? -1 : 0);
                 if (newState != 0 && CurrentBar > 0 && signalState[1] != newState)
                 {
-                    Alert($"TTWVolumeFlow_{(newState == 1 ? "Bull" : "Bear")}", 
-                          Priority.Medium, 
-                          $"TTWVolumeFlow {(newState == 1 ? "Bullish" : "Bearish")} Signal", 
+                    Alert($"TTWVolumeFlow_{(newState == 1 ? "Bull" : "Bear")}",
+                          Priority.Medium,
+                          $"TTWVolumeFlow {(newState == 1 ? "Bullish" : "Bearish")} Signal",
                           AlertSound, 0, null, null);
                 }
                 signalState[0] = newState;
             }
-            
+
             // END PERFORMANCE MEASUREMENT
             RecordPerformanceMetrics(memBefore);
         }
 
         #region Optimized Helper Methods
-        
+
         private void UpdateCachedValues()
         {
             if (!cacheValid || lastBarCached != CurrentBar)
@@ -437,65 +542,38 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 cachedClose = Close[0];
                 cachedHigh = High[0];
                 cachedLow = Low[0];
-                
+
                 // Calculate bar height once with fallback
                 cachedBarHeight = cachedHigh - cachedLow;
                 if (cachedBarHeight <= TickSize * 0.5)
                     cachedBarHeight = TickSize * 2.0;
-                
+
                 if (EnableAtrTrailingFilter && atrTrailing != atr)
                     cachedATRTrailing = atrTrailing[0];
                 else
                     cachedATRTrailing = cachedATR;
-                
+
                 cacheValid = true;
                 lastBarCached = CurrentBar;
             }
         }
-        
-        private void SetPlotValues(double bull, double bear, double longStop, double shortStop)
+
+        private void SetPlotValues(double bull, double bear, double stopLine)
         {
             Values[0][0] = bull;
             Values[1][0] = bear;
-            Values[2][0] = longStop;
-            Values[3][0] = shortStop;
+            Values[2][0] = stopLine;
         }
-        
-        private void CalculateAtrTrailingStop()
-        {
-            double trailingAmount = AtrTrailingMultiplier * cachedATRTrailing;
-            
-            preliminaryTrend[0] = preliminaryTrend[1];
-            
-            if (preliminaryTrend[0] > 0.5) // Uptrend
-            {
-                currentStopLong[0] = Math.Max(currentStopLong[1], Close[1] - trailingAmount);
-                currentStopShort[0] = Close[1] + trailingAmount;
-                
-                if (cachedLow < currentStopLong[0])
-                    preliminaryTrend[0] = -1.0;
-            }
-            else // Downtrend
-            {
-                currentStopShort[0] = Math.Min(currentStopShort[1], Close[1] + trailingAmount);
-                currentStopLong[0] = Close[1] - trailingAmount;
-                
-                if (cachedHigh > currentStopShort[0])
-                    preliminaryTrend[0] = 1.0;
-            }
-            
-            trend[0] = preliminaryTrend[0];
-        }
-        
+
         private void ManageSignalDrawings(int barIndex, bool isBullish, bool isBearish)
         {
             string[] tags = GetOrCreateDrawingTags(barIndex);
-            
+
             if (isBullish)
             {
                 double symbolY = cachedLow - (cachedBarHeight * ArrowOffsetFactor);
                 DrawOptimizedSymbol(tags[0], true, symbolY, BullishColor);
-                
+
                 if (ShowLabel)
                 {
                     double labelY = symbolY - (cachedBarHeight * VolumeOffsetFactor);
@@ -508,7 +586,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             {
                 double symbolY = cachedHigh + (cachedBarHeight * ArrowOffsetFactor);
                 DrawOptimizedSymbol(tags[1], false, symbolY, BearishColor);
-                
+
                 if (ShowLabel)
                 {
                     double labelY = symbolY + (cachedBarHeight * VolumeOffsetFactor);
@@ -518,7 +596,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 }
             }
         }
-        
+
         private string[] GetOrCreateDrawingTags(int barIndex)
         {
             if (!activeDrawings.TryGetValue(barIndex, out string[] tags))
@@ -534,7 +612,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             }
             return tags;
         }
-        
+
         private void CleanupBarDrawings(int barIndex)
         {
             if (activeDrawings.TryGetValue(barIndex, out string[] tags))
@@ -546,7 +624,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 activeDrawings.Remove(barIndex);
             }
         }
-        
+
         private void DrawOptimizedSymbol(string tag, bool isBullish, double yPosition, Brush color)
         {
             switch (SymbolType)
@@ -574,23 +652,23 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                     break;
             }
         }
-        
+
         private void RecordPerformanceMetrics(long memBefore)
         {
             perfTimer.Stop();
             totalExecutionTime += perfTimer.ElapsedTicks;
             executionCount++;
-            
+
             long memAfter = GC.GetTotalMemory(false);
             long currentMem = memAfter - startMemory;
             if (currentMem > peakMemory) peakMemory = currentMem;
-            
+
             if (executionCount % 1000 == 0)
             {
                 Print($"Processed {executionCount} bars | Avg time: {(totalExecutionTime / executionCount / 10)} microseconds");
             }
         }
-        
+
         #endregion
     }
 }
@@ -599,55 +677,55 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
 
 namespace NinjaTrader.NinjaScript.Indicators
 {
-	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
-	{
-		private TTW.TTWVolumeFlowOptimized[] cacheTTWVolumeFlowOptimized;
-		public TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showAtrStops, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
-		{
-			return TTWVolumeFlowOptimized(Input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showAtrStops, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
-		}
+    public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+    {
+        private TTW.TTWVolumeFlowOptimized[] cacheTTWVolumeFlowOptimized;
+        public TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showStopLine, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
+        {
+            return TTWVolumeFlowOptimized(Input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showStopLine, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
+        }
 
-		public TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(ISeries<double> input, double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showAtrStops, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
-		{
-			if (cacheTTWVolumeFlowOptimized != null)
-				for (int idx = 0; idx < cacheTTWVolumeFlowOptimized.Length; idx++)
-					if (cacheTTWVolumeFlowOptimized[idx] != null && cacheTTWVolumeFlowOptimized[idx].VolumeMultiplier == volumeMultiplier && cacheTTWVolumeFlowOptimized[idx].VolumePeriod == volumePeriod && cacheTTWVolumeFlowOptimized[idx].AtrPeriod == atrPeriod && cacheTTWVolumeFlowOptimized[idx].AtrMultiplier == atrMultiplier && cacheTTWVolumeFlowOptimized[idx].ArrowOffsetFactor == arrowOffsetFactor && cacheTTWVolumeFlowOptimized[idx].VolumeOffsetFactor == volumeOffsetFactor && cacheTTWVolumeFlowOptimized[idx].ShowLabel == showLabel && cacheTTWVolumeFlowOptimized[idx].SymbolType == symbolType && cacheTTWVolumeFlowOptimized[idx].SymbolSize == symbolSize && cacheTTWVolumeFlowOptimized[idx].BullishColor == bullishColor && cacheTTWVolumeFlowOptimized[idx].BearishColor == bearishColor && cacheTTWVolumeFlowOptimized[idx].LabelFontFamily == labelFontFamily && cacheTTWVolumeFlowOptimized[idx].LabelFontSize == labelFontSize && cacheTTWVolumeFlowOptimized[idx].LabelFontBold == labelFontBold && cacheTTWVolumeFlowOptimized[idx].EnableAtrTrailingFilter == enableAtrTrailingFilter && cacheTTWVolumeFlowOptimized[idx].AtrTrailingPeriod == atrTrailingPeriod && cacheTTWVolumeFlowOptimized[idx].AtrTrailingMultiplier == atrTrailingMultiplier && cacheTTWVolumeFlowOptimized[idx].ShowAtrStops == showAtrStops && cacheTTWVolumeFlowOptimized[idx].AtrLongStopColor == atrLongStopColor && cacheTTWVolumeFlowOptimized[idx].AtrShortStopColor == atrShortStopColor && cacheTTWVolumeFlowOptimized[idx].ProcessSecondarySeries == processSecondarySeries && cacheTTWVolumeFlowOptimized[idx].IgnoreFirstBarsOfSession == ignoreFirstBarsOfSession && cacheTTWVolumeFlowOptimized[idx].EnableAlerts == enableAlerts && cacheTTWVolumeFlowOptimized[idx].AlertSound == alertSound && cacheTTWVolumeFlowOptimized[idx].EqualsInput(input))
-						return cacheTTWVolumeFlowOptimized[idx];
-			return CacheIndicator<TTW.TTWVolumeFlowOptimized>(new TTW.TTWVolumeFlowOptimized(){ VolumeMultiplier = volumeMultiplier, VolumePeriod = volumePeriod, AtrPeriod = atrPeriod, AtrMultiplier = atrMultiplier, ArrowOffsetFactor = arrowOffsetFactor, VolumeOffsetFactor = volumeOffsetFactor, ShowLabel = showLabel, SymbolType = symbolType, SymbolSize = symbolSize, BullishColor = bullishColor, BearishColor = bearishColor, LabelFontFamily = labelFontFamily, LabelFontSize = labelFontSize, LabelFontBold = labelFontBold, EnableAtrTrailingFilter = enableAtrTrailingFilter, AtrTrailingPeriod = atrTrailingPeriod, AtrTrailingMultiplier = atrTrailingMultiplier, ShowAtrStops = showAtrStops, AtrLongStopColor = atrLongStopColor, AtrShortStopColor = atrShortStopColor, ProcessSecondarySeries = processSecondarySeries, IgnoreFirstBarsOfSession = ignoreFirstBarsOfSession, EnableAlerts = enableAlerts, AlertSound = alertSound }, input, ref cacheTTWVolumeFlowOptimized);
-		}
-	}
+        public TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(ISeries<double> input, double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showStopLine, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
+        {
+            if (cacheTTWVolumeFlowOptimized != null)
+                for (int idx = 0; idx < cacheTTWVolumeFlowOptimized.Length; idx++)
+                    if (cacheTTWVolumeFlowOptimized[idx] != null && cacheTTWVolumeFlowOptimized[idx].VolumeMultiplier == volumeMultiplier && cacheTTWVolumeFlowOptimized[idx].VolumePeriod == volumePeriod && cacheTTWVolumeFlowOptimized[idx].AtrPeriod == atrPeriod && cacheTTWVolumeFlowOptimized[idx].AtrMultiplier == atrMultiplier && cacheTTWVolumeFlowOptimized[idx].ArrowOffsetFactor == arrowOffsetFactor && cacheTTWVolumeFlowOptimized[idx].VolumeOffsetFactor == volumeOffsetFactor && cacheTTWVolumeFlowOptimized[idx].ShowLabel == showLabel && cacheTTWVolumeFlowOptimized[idx].SymbolType == symbolType && cacheTTWVolumeFlowOptimized[idx].SymbolSize == symbolSize && cacheTTWVolumeFlowOptimized[idx].BullishColor == bullishColor && cacheTTWVolumeFlowOptimized[idx].BearishColor == bearishColor && cacheTTWVolumeFlowOptimized[idx].LabelFontFamily == labelFontFamily && cacheTTWVolumeFlowOptimized[idx].LabelFontSize == labelFontSize && cacheTTWVolumeFlowOptimized[idx].LabelFontBold == labelFontBold && cacheTTWVolumeFlowOptimized[idx].EnableAtrTrailingFilter == enableAtrTrailingFilter && cacheTTWVolumeFlowOptimized[idx].AtrTrailingPeriod == atrTrailingPeriod && cacheTTWVolumeFlowOptimized[idx].AtrTrailingMultiplier == atrTrailingMultiplier && cacheTTWVolumeFlowOptimized[idx].ShowStopLine == showStopLine && cacheTTWVolumeFlowOptimized[idx].AtrLongStopColor == atrLongStopColor && cacheTTWVolumeFlowOptimized[idx].AtrShortStopColor == atrShortStopColor && cacheTTWVolumeFlowOptimized[idx].ProcessSecondarySeries == processSecondarySeries && cacheTTWVolumeFlowOptimized[idx].IgnoreFirstBarsOfSession == ignoreFirstBarsOfSession && cacheTTWVolumeFlowOptimized[idx].EnableAlerts == enableAlerts && cacheTTWVolumeFlowOptimized[idx].AlertSound == alertSound && cacheTTWVolumeFlowOptimized[idx].EqualsInput(input))
+                        return cacheTTWVolumeFlowOptimized[idx];
+            return CacheIndicator<TTW.TTWVolumeFlowOptimized>(new TTW.TTWVolumeFlowOptimized() { VolumeMultiplier = volumeMultiplier, VolumePeriod = volumePeriod, AtrPeriod = atrPeriod, AtrMultiplier = atrMultiplier, ArrowOffsetFactor = arrowOffsetFactor, VolumeOffsetFactor = volumeOffsetFactor, ShowLabel = showLabel, SymbolType = symbolType, SymbolSize = symbolSize, BullishColor = bullishColor, BearishColor = bearishColor, LabelFontFamily = labelFontFamily, LabelFontSize = labelFontSize, LabelFontBold = labelFontBold, EnableAtrTrailingFilter = enableAtrTrailingFilter, AtrTrailingPeriod = atrTrailingPeriod, AtrTrailingMultiplier = atrTrailingMultiplier, ShowStopLine = showStopLine, AtrLongStopColor = atrLongStopColor, AtrShortStopColor = atrShortStopColor, ProcessSecondarySeries = processSecondarySeries, IgnoreFirstBarsOfSession = ignoreFirstBarsOfSession, EnableAlerts = enableAlerts, AlertSound = alertSound }, input, ref cacheTTWVolumeFlowOptimized);
+        }
+    }
 }
 
 namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
-	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
-	{
-		public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showAtrStops, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
-		{
-			return indicator.TTWVolumeFlowOptimized(Input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showAtrStops, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
-		}
+    public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+    {
+        public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showStopLine, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
+        {
+            return indicator.TTWVolumeFlowOptimized(Input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showStopLine, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
+        }
 
-		public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(ISeries<double> input , double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showAtrStops, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
-		{
-			return indicator.TTWVolumeFlowOptimized(input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showAtrStops, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
-		}
-	}
+        public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(ISeries<double> input, double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showStopLine, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
+        {
+            return indicator.TTWVolumeFlowOptimized(input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showStopLine, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
+        }
+    }
 }
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
-	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
-	{
-		public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showAtrStops, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
-		{
-			return indicator.TTWVolumeFlowOptimized(Input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showAtrStops, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
-		}
+    public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+    {
+        public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showStopLine, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
+        {
+            return indicator.TTWVolumeFlowOptimized(Input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showStopLine, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
+        }
 
-		public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(ISeries<double> input , double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showAtrStops, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
-		{
-			return indicator.TTWVolumeFlowOptimized(input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showAtrStops, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
-		}
-	}
+        public Indicators.TTW.TTWVolumeFlowOptimized TTWVolumeFlowOptimized(ISeries<double> input, double volumeMultiplier, int volumePeriod, int atrPeriod, double atrMultiplier, double arrowOffsetFactor, double volumeOffsetFactor, bool showLabel, int symbolType, int symbolSize, Brush bullishColor, Brush bearishColor, string labelFontFamily, int labelFontSize, bool labelFontBold, bool enableAtrTrailingFilter, int atrTrailingPeriod, double atrTrailingMultiplier, bool showStopLine, Brush atrLongStopColor, Brush atrShortStopColor, bool processSecondarySeries, int ignoreFirstBarsOfSession, bool enableAlerts, string alertSound)
+        {
+            return indicator.TTWVolumeFlowOptimized(input, volumeMultiplier, volumePeriod, atrPeriod, atrMultiplier, arrowOffsetFactor, volumeOffsetFactor, showLabel, symbolType, symbolSize, bullishColor, bearishColor, labelFontFamily, labelFontSize, labelFontBold, enableAtrTrailingFilter, atrTrailingPeriod, atrTrailingMultiplier, showStopLine, atrLongStopColor, atrShortStopColor, processSecondarySeries, ignoreFirstBarsOfSession, enableAlerts, alertSound);
+        }
+    }
 }
 
 #endregion
