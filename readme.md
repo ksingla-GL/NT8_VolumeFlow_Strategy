@@ -10,7 +10,6 @@ High-performance volume analysis indicator for NinjaTrader 8 that detects signif
 |--------|----------|-----------|-------------|
 | **Execution Speed** | 87 μs/bar | 2 μs/bar | **97.7% faster** |
 | **Memory Usage** | 12.87 MB | 3.03 MB | **76.5% reduction** |
-| **Processing Time** | 49.35s | 43.70s | **11.5% faster** |
 
 ## Key Features
 
