@@ -4,7 +4,7 @@
 
 \## Issue Addressed
 
-\- Client reported erratic/jittery ATR trailing stop behavior
+\- Walter reported erratic/jittery ATR trailing stop behavior
 
 \- Unwanted signal reversals (marked with red X in screenshots)
 
@@ -26,7 +26,7 @@
 
 \## Key Changes
 
-1\. Replaced ATR calculation logic (lines 290-320)
+1\. Replaced ATR calculation logic
 
 2\. Added proper trend tracking with preliminaryTrend/trend series
 
