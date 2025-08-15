@@ -111,10 +111,12 @@ Enhanced visual controls
 
  M5 - Testing & Documentation (Future)
 
-Documentation
+#Documentation
 
 Project Brief - Original requirements
+
 Performance Report - Optimization results
+
 Changelog - Detailed changes
 
 ## Contributing
