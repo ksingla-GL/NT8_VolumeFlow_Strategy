@@ -126,10 +126,10 @@ License
 Proprietary - TTW (Confidential)
 All rights reserved. This code is under NDA and is the exclusive property of TTW.
 
-Developer
+Developer - 
 Kshitij Singla
 
-GitHub: @ksingla-GL
+
 Project: NinjaTrader 8 Indicator Optimization
 
 ## Acknowledgments
