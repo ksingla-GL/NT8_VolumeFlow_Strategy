@@ -21,7 +21,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
     /// <summary>
     /// TTWVolumeFlow - Detects significant volume spikes and marks potential stop/reversal zones.
     /// Optional: ATR Trailing Stop Filter, Alerts, Session Filter, Multi-Series Protection, ATR Stop Plots.
-    /// OPTIMIZED VERSION - M2.5 with Harry's ATR Trailing Stop Logic
+    /// OPTIMIZED VERSION - M2.5 with Harry's ATR Trailing Stop Logic (Fixed)
     /// </summary>
     [Description("Detects significant volume spikes and marks potential stop/reversal zones. Optional with ATR Trailing Stop Filter.")]
     public class TTWVolumeFlowOptimized : Indicator
@@ -50,6 +50,9 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         // ATR Stop tracking
         private bool stoppedOut;
         private double trailingAmount;
+
+        // Version string
+        private string versionString = "v2.5.1";
 
         // PERFORMANCE OPTIMIZATIONS - Cached values
         private double cachedVolumeSMA;
@@ -211,6 +214,15 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         [Display(Name = "Alert Sound", Description = "Sound file (e.g., Alert1.wav)", Order = 2, GroupName = "08. Alerts")]
         public string AlertSound { get; set; }
 
+        // --- Version ---
+        [XmlIgnore]
+        [Display(Name = "Release and date", Description = "Release version and date", Order = 0, GroupName = "09. Version")]
+        public string VersionString
+        {
+            get { return versionString; }
+            set {; }
+        }
+
         // Public access to trend for strategies
         [Browsable(false)]
         [XmlIgnore]
@@ -298,14 +310,14 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 perfTimer = new System.Diagnostics.Stopwatch();
                 startMemory = GC.GetTotalMemory(true);
                 testStartTime = DateTime.Now;
-                Print("=== PERFORMANCE TEST STARTED (OPTIMIZED with Harry's ATR) ===");
+                Print("=== PERFORMANCE TEST STARTED (OPTIMIZED v2.5.1) ===");
             }
             else if (State == State.Terminated)
             {
                 // PERFORMANCE TESTING OUTPUT
                 if (executionCount > 0)
                 {
-                    Print("=== PERFORMANCE TEST RESULTS (OPTIMIZED with Harry's ATR) ===");
+                    Print("=== PERFORMANCE TEST RESULTS (OPTIMIZED v2.5.1) ===");
                     Print($"Test Duration: {(DateTime.Now - testStartTime).TotalSeconds:F2} seconds");
                     Print($"Total Bars Processed: {executionCount}");
                     Print($"Average Time per Bar: {totalExecutionTime / executionCount / 10} microseconds");
@@ -341,8 +353,10 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             {
                 preliminaryTrend[0] = 1.0;
                 trend[0] = 1.0;
-                Values[2][0] = Close[0];
-                PlotBrushes[2][0] = Brushes.Transparent;
+                currentStopLong[0] = Close[0] - TickSize * 2;
+                currentStopShort[0] = Close[0] + TickSize * 2;
+                Values[2][0] = currentStopLong[0];
+                PlotBrushes[2][0] = AtrLongStopColor;
                 return;
             }
 
@@ -358,12 +372,16 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
 
             // Minimum bars check
             int requiredBars = Math.Max(VolumePeriod, Math.Max(AtrPeriod, AtrTrailingPeriod));
+
+            // Keep the Harry ladder running on EVERY bar >= 2 so [1] is always valid
+            UpdateATRTrailingStop();
+
             if (CurrentBar < requiredBars || sessionBarCount <= IgnoreFirstBarsOfSession)
             {
-                SetPlotValues(double.NaN, double.NaN, Close[0]);
+                // Hide signals during warm-up; line will still draw (next edit)
+                SetPlotValues(double.NaN, double.NaN);
+                UpdateStopLinePlot();
                 CleanupBarDrawings(CurrentBar);
-
-                // END PERFORMANCE MEASUREMENT
                 RecordPerformanceMetrics(memBefore);
                 return;
             }
@@ -371,79 +389,14 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             // Cache values once per bar
             UpdateCachedValues();
 
-            // HARRY'S ATR TRAILING STOP LOGIC - INTEGRATED
-            if (EnableAtrTrailingFilter)
-            {
-                if (IsFirstTickOfBar)
-                {
-                    // Calculate trailing amount
-                    double offset = Math.Max(TickSize, atrTrailing[1]);
-                    trailingAmount = AtrTrailingMultiplier * offset;
-
-                    // Update stops based on trend (Harry's step-ladder approach)
-                    if (preliminaryTrend[1] > 0.5) // Uptrend
-                    {
-                        // Long stop can only move up or stay the same
-                        currentStopLong[0] = Math.Max(currentStopLong[1], Math.Min(Close[1] - trailingAmount, Close[1] - TickSize));
-                        currentStopShort[0] = Close[1] + trailingAmount;
-                    }
-                    else // Downtrend
-                    {
-                        // Short stop can only move down or stay the same
-                        currentStopShort[0] = Math.Min(currentStopShort[1], Math.Max(Close[1] + trailingAmount, Close[1] + TickSize));
-                        currentStopLong[0] = Close[1] - trailingAmount;
-                    }
-                }
-
-                // Check for trend reversal (only one reversal per bar allowed)
-                if (Calculate == Calculate.OnPriceChange && !stoppedOut)
-                {
-                    if (preliminaryTrend[1] > 0.5 && Low[0] < currentStopLong[0])
-                    {
-                        preliminaryTrend[0] = -1.0;
-                        stoppedOut = true;
-                    }
-                    else if (preliminaryTrend[1] < -0.5 && High[0] > currentStopShort[0])
-                    {
-                        preliminaryTrend[0] = 1.0;
-                        stoppedOut = true;
-                    }
-                    else
-                    {
-                        preliminaryTrend[0] = preliminaryTrend[1];
-                    }
-                }
-                else if (Calculate == Calculate.OnBarClose)
-                {
-                    if (preliminaryTrend[1] > 0.5 && Close[0] < currentStopLong[0])
-                        preliminaryTrend[0] = -1.0;
-                    else if (preliminaryTrend[1] < -0.5 && Close[0] > currentStopShort[0])
-                        preliminaryTrend[0] = 1.0;
-                    else
-                        preliminaryTrend[0] = preliminaryTrend[1];
-                }
-
-                // Update confirmed trend
-                if (Calculate == Calculate.OnBarClose)
-                    trend[0] = preliminaryTrend[0];
-                else if (IsFirstTickOfBar)
-                    trend[0] = preliminaryTrend[1];
-                else
-                    trend[0] = preliminaryTrend[0];
-            }
-            else
-            {
-                // If ATR filter disabled, set neutral trend
-                trend[0] = 0;
-                preliminaryTrend[0] = 0;
-            }
+            // ALWAYS calculate ATR Trailing Stop (for the line display)
+            UpdateATRTrailingStop();
 
             // Early exit checks with cached values
             if (cachedVolumeSMA <= 0 || double.IsNaN(cachedVolumeSMA))
             {
-                SetPlotValues(double.NaN, double.NaN,
-                    EnableAtrTrailingFilter && ShowStopLine ?
-                        (trend[0] > 0.5 ? currentStopLong[0] : currentStopShort[0]) : double.NaN);
+                SetPlotValues(double.NaN, double.NaN);
+                UpdateStopLinePlot();
                 CleanupBarDrawings(CurrentBar);
 
                 // END PERFORMANCE MEASUREMENT
@@ -463,7 +416,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 isBullishStop = (cachedClose > cachedOpen + atrThreshold);
                 isBearishStop = (cachedClose < cachedOpen - atrThreshold);
 
-                // Apply ATR Trailing Filter if enabled
+                // Apply ATR Trailing Filter if enabled (only affects signals, not line display)
                 if (EnableAtrTrailingFilter && CurrentBar > 2)
                 {
                     // Only allow signals aligned with the trend
@@ -479,27 +432,14 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 }
             }
 
-            // Set plot values efficiently
-            double stopLineValue = double.NaN;
-            if (EnableAtrTrailingFilter && ShowStopLine)
-            {
-                if (trend[0] > 0.5)
-                {
-                    stopLineValue = currentStopLong[0];
-                    PlotBrushes[2][0] = AtrLongStopColor;
-                }
-                else if (trend[0] < -0.5)
-                {
-                    stopLineValue = currentStopShort[0];
-                    PlotBrushes[2][0] = AtrShortStopColor;
-                }
-            }
-
+            // Set plot values for signals
             SetPlotValues(
                 isBullishStop ? cachedLow - 2 * TickSize : double.NaN,
-                isBearishStop ? cachedHigh + 2 * TickSize : double.NaN,
-                stopLineValue
+                isBearishStop ? cachedHigh + 2 * TickSize : double.NaN
             );
+
+            // Update stop line display (decoupled from filter)
+            UpdateStopLinePlot();
 
             // Drawing logic - optimized
             if (isBullishStop || isBearishStop)
@@ -548,7 +488,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 if (cachedBarHeight <= TickSize * 0.5)
                     cachedBarHeight = TickSize * 2.0;
 
-                if (EnableAtrTrailingFilter && atrTrailing != atr)
+                if (atrTrailing != atr)
                     cachedATRTrailing = atrTrailing[0];
                 else
                     cachedATRTrailing = cachedATR;
@@ -558,11 +498,99 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             }
         }
 
-        private void SetPlotValues(double bull, double bear, double stopLine)
+        private void UpdateATRTrailingStop()
+        {
+            if (IsFirstTickOfBar)
+            {
+                // Calculate trailing amount
+                double offset = Math.Max(TickSize, atrTrailing[1]);
+                trailingAmount = AtrTrailingMultiplier * offset;
+
+                // Update stops based on trend (Harry's step-ladder approach)
+                if (preliminaryTrend[1] > 0.5) // Uptrend
+                {
+                    // Long stop can only move up or stay the same
+                    currentStopLong[0] = Math.Max(currentStopLong[1], Math.Min(Close[1] - trailingAmount, Close[1] - TickSize));
+                    currentStopShort[0] = Close[1] + trailingAmount;
+                }
+                else // Downtrend
+                {
+                    // Short stop can only move down or stay the same
+                    currentStopShort[0] = Math.Min(currentStopShort[1], Math.Max(Close[1] + trailingAmount, Close[1] + TickSize));
+                    currentStopLong[0] = Close[1] - trailingAmount;
+                }
+            }
+
+            // Check for trend reversal (only one reversal per bar allowed)
+            if (Calculate == Calculate.OnPriceChange && !stoppedOut)
+            {
+                if (preliminaryTrend[1] > 0.5 && Low[0] < currentStopLong[0])
+                {
+                    preliminaryTrend[0] = -1.0;
+                    stoppedOut = true;
+                }
+                else if (preliminaryTrend[1] < -0.5 && High[0] > currentStopShort[0])
+                {
+                    preliminaryTrend[0] = 1.0;
+                    stoppedOut = true;
+                }
+                else
+                {
+                    preliminaryTrend[0] = preliminaryTrend[1];
+                }
+            }
+            else if (Calculate == Calculate.OnBarClose)
+            {
+                if (preliminaryTrend[1] > 0.5 && Close[0] < currentStopLong[0])
+                    preliminaryTrend[0] = -1.0;
+                else if (preliminaryTrend[1] < -0.5 && Close[0] > currentStopShort[0])
+                    preliminaryTrend[0] = 1.0;
+                else
+                    preliminaryTrend[0] = preliminaryTrend[1];
+            }
+
+            // Update confirmed trend
+            if (Calculate == Calculate.OnBarClose)
+                trend[0] = preliminaryTrend[0];
+            else if (IsFirstTickOfBar)
+                trend[0] = preliminaryTrend[1];
+            else
+                trend[0] = preliminaryTrend[0];
+        }
+
+        private void UpdateStopLinePlot()
+        {
+            // ALWAYS show stop line when ShowStopLine is true, regardless of filter
+            if (ShowStopLine && CurrentBar >= 2)
+            {
+                if (trend[0] > 0.5)
+                {
+                    Values[2][0] = currentStopLong[0];
+                    PlotBrushes[2][0] = AtrLongStopColor;
+                }
+                else if (trend[0] < -0.5)
+                {
+                    Values[2][0] = currentStopShort[0];
+                    PlotBrushes[2][0] = AtrShortStopColor;
+                }
+                else
+                {
+                    // Neutral trend - use previous stop
+                    Values[2][0] = preliminaryTrend[0] > 0 ? currentStopLong[0] : currentStopShort[0];
+                    PlotBrushes[2][0] = preliminaryTrend[0] > 0 ? AtrLongStopColor : AtrShortStopColor;
+                }
+            }
+            else
+            {
+                Values[2][0] = double.NaN;
+                PlotBrushes[2][0] = Brushes.Transparent;
+            }
+        }
+
+        private void SetPlotValues(double bull, double bear)
         {
             Values[0][0] = bull;
             Values[1][0] = bear;
-            Values[2][0] = stopLine;
         }
 
         private void ManageSignalDrawings(int barIndex, bool isBullish, bool isBearish)
