@@ -95,7 +95,6 @@ Peak Memory Usage: 3.03 MB
 
 100% output parity verified
 
-
  ### M3 - Functional Enrichment (Upcoming)
 
 Alternative volume calculation methods
