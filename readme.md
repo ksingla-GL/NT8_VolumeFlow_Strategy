@@ -26,7 +26,14 @@ High-performance volume analysis indicator for NinjaTrader 8 that detects signif
 - Configurable colors and fonts
 - Smart positioning system to avoid chart clutter
 
-### Advanced Features
+### Advanced Features (M3 + M4)
+- **5 Volume Reference Models**: SMA, EMA, Highest, TrimmedMean, Median
+- **Advanced Spike Detection**: Z-Score and Multiplier methods
+- **Signal Debouncing**: Configurable minimum bars between signals
+- **Volume Normalization**: Cross-instrument comparison capability
+- **Professional UI**: 11 organized parameter groups with comprehensive tooltips
+- **Advanced Visual Controls**: 5 symbol types, full color/font customization
+- **Flexible Display Options**: Individual toggles for all visual elements
 - Session-aware processing
 - Multi-series data support
 - Alert system with customizable sounds
@@ -96,22 +103,37 @@ Peak Memory Usage: 3.03 MB
 100% output parity verified
 
 
- ### M3 - Functional Enrichment (Upcoming)
+ ### M3 - Functional Enrichment (Completed)
 
-Alternative volume calculation methods
+ **5 Volume Reference Methods**: SMA, EMA, Highest, TrimmedMean, Median
 
-Z-score spike detection
+ **Advanced Spike Detection**: Z-Score and Multiplier algorithms with configurable thresholds
 
-Signal debouncing
+ **Signal Debouncing**: Minimum bars between signals to reduce noise
+
+ **Volume Normalization**: Cross-instrument volume comparison
+
+ **Enhanced Visualization**: Spike markers with volume percentage labels
+
+ **Professional UI**: 11 organized parameter groups with comprehensive tooltips
 
 
- ### M4 - UI/UX Enhancement (Planned)
+ ### M4 - UI/UX Enhancement (70% Complete)
 
-Preset system
+ **Professional Parameter Organization**: 11 logical groups with comprehensive tooltips
 
-On-chart status display
+ **Advanced Visual Controls**: Symbol types (Arrow, Diamond, Square, Triangle, Line)
 
-Enhanced visual controls
+ **Complete Color & Font Customization**: Bullish/Bearish/Spike colors, font family/size/bold
+
+ **Spacing & Positioning Controls**: Arrow/Volume offset factors, symbol sizing
+
+ **Toggle Controls**: ATR stop lines, volume labels, spike markers with individual show/hide
+
+ **Remaining Items**:
+- Preset system
+- On-chart status display  
+- Company logo integration
 
 
  ### M5 - Testing & Documentation (Future)
@@ -144,4 +166,4 @@ Walter Lesicar for project coordination and testing parameters
 
 
 Last Updated: August 2025
-Version: 2.0 (M2 Optimized)
+Version: 3.0 (M3 Enhanced with Advanced Volume Analysis)

@@ -21,11 +21,14 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
     /// <summary>
     /// TTWVolumeFlow - Detects significant volume spikes and marks potential stop/reversal zones.
     /// Optional: ATR Trailing Stop Filter, Alerts, Session Filter, Multi-Series Protection, ATR Stop Plots.
-    /// OPTIMIZED VERSION - M2.5 with Harry's ATR Trailing Stop Logic (Fixed)
+    /// OPTIMIZED VERSION - M3 with Advanced Volume Analysis
     /// </summary>
-    [Description("Detects significant volume spikes and marks potential stop/reversal zones. Optional with ATR Trailing Stop Filter.")]
+    [Description("Detects significant volume spikes and marks potential stop/reversal zones. M3 with advanced volume analysis.")]
     public class TTWVolumeFlowOptimized : Indicator
     {
+        // M3 Enums - replaced with constants for NinjaScript compatibility
+        // VolumeReferenceType: 0=SMA, 1=EMA, 2=Highest, 3=TrimmedMean, 4=Median
+        // SpikeDetectionMode: 0=None, 1=Multiplier, 2=ZScore
         #region Private Variables
         // Indicators
         private SMA volumeSMA;
@@ -52,7 +55,23 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         private double trailingAmount;
 
         // Version string
-        private string versionString = "v2.5.1";
+        private string versionString = "v3.0";
+
+        // M3 FUNCTIONAL ENRICHMENT - Volume Analysis
+        private Series<double> referenceVolume;
+        private EMA volumeEMA;
+        private MAX volumeMAX;
+        private StdDev volumeStdDevIndicator;
+        private List<double> volumeBuffer;
+        private Series<bool> spikeState;
+        private Series<int> lastBullSignalBar, lastBearSignalBar;
+        private double cachedReferenceVolume;
+        private double cachedVolumeZScore;
+        private bool isSpikeDetected, isNormalizedVolume;
+        
+        // M3 Drawing constants
+        private const string SPIKE_BULL = "SpikeBull";
+        private const string SPIKE_BEAR = "SpikeBear";
 
         // PERFORMANCE OPTIMIZATIONS - Cached values
         private double cachedVolumeSMA;
@@ -195,28 +214,69 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
         [Browsable(false)]
         public string AtrShortStopColorSerializable { get { return Serialize.BrushToString(AtrShortStopColor); } set { AtrShortStopColor = Serialize.StringToBrush(value); } }
 
+        // --- M3 Volume Analysis ---
+        [NinjaScriptProperty]
+        [Range(0, 4)]
+        [Display(Name = "Volume Reference Type", Description = "0=SMA, 1=EMA, 2=Highest, 3=TrimmedMean, 4=Median", Order = 1, GroupName = "07. Volume Analysis")]
+        public int VolumeRefType { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 2)]
+        [Display(Name = "Spike Detection Mode", Description = "0=None, 1=Multiplier, 2=ZScore", Order = 2, GroupName = "07. Volume Analysis")]
+        public int SpikeMode { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 5.0)]
+        [Display(Name = "Z-Score Threshold", Description = "Z-Score threshold for spike detection", Order = 3, GroupName = "07. Volume Analysis")]
+        public double ZScoreThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Enable Volume Normalization", Description = "Normalize volume for cross-instrument comparison", Order = 4, GroupName = "07. Volume Analysis")]
+        public bool EnableVolumeNormalization { get; set; }
+
+        // --- M3 Signal Management ---
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(Name = "Min Bars Between Signals", Description = "Minimum bars between signals (debounce)", Order = 1, GroupName = "08. Signal Management")]
+        public int MinBarsBetweenSignals { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Spike Markers", Description = "Display spike detection markers", Order = 2, GroupName = "08. Signal Management")]
+        public bool ShowSpikeMarkers { get; set; }
+
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Spike Color", Description = "Color for spike markers", Order = 3, GroupName = "08. Signal Management")]
+        public Brush SpikeColor { get; set; }
+        [Browsable(false)]
+        public string SpikeColorSerializable { get { return Serialize.BrushToString(SpikeColor); } set { SpikeColor = Serialize.StringToBrush(value); } }
+
         // --- Advanced / Filters ---
         [NinjaScriptProperty]
-        [Display(Name = "Process Secondary Series", Description = "Process additional data series", Order = 1, GroupName = "07. Advanced")]
+        [Display(Name = "Process Secondary Series", Description = "Process additional data series", Order = 1, GroupName = "09. Advanced")]
         public bool ProcessSecondarySeries { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 100)]
-        [Display(Name = "Ignore First Bars of Session", Description = "Ignore first X bars of each session", Order = 2, GroupName = "07. Advanced")]
+        [Display(Name = "Ignore First Bars of Session", Description = "Ignore first X bars of each session", Order = 2, GroupName = "09. Advanced")]
         public int IgnoreFirstBarsOfSession { get; set; }
 
         // --- Alerts ---
         [NinjaScriptProperty]
-        [Display(Name = "Enable Alerts", Description = "Alert on new signal (once per bar)", Order = 1, GroupName = "08. Alerts")]
+        [Display(Name = "Enable Alerts", Description = "Alert on new signal (once per bar)", Order = 1, GroupName = "10. Alerts")]
         public bool EnableAlerts { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Alert Sound", Description = "Sound file (e.g., Alert1.wav)", Order = 2, GroupName = "08. Alerts")]
+        [Display(Name = "Alert Sound", Description = "Sound file (e.g., Alert1.wav)", Order = 2, GroupName = "10. Alerts")]
         public string AlertSound { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Spike Alert Sound", Description = "Sound file for spike alerts", Order = 3, GroupName = "10. Alerts")]
+        public string SpikeAlertSound { get; set; }
 
         // --- Version ---
         [XmlIgnore]
-        [Display(Name = "Release and date", Description = "Release version and date", Order = 0, GroupName = "09. Version")]
+        [Display(Name = "Release and date", Description = "Release version and date", Order = 0, GroupName = "11. Version")]
         public string VersionString
         {
             get { return versionString; }
@@ -278,6 +338,16 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 EnableAlerts = false;
                 AlertSound = "Alert1.wav";
 
+                // M3 Defaults (backward compatible)
+                VolumeRefType = 0;  // SMA - Keep SMA for output parity
+                SpikeMode = 1;  // Multiplier - Keep existing logic
+                ZScoreThreshold = 2.5;
+                EnableVolumeNormalization = false;
+                MinBarsBetweenSignals = 0;  // Disabled by default
+                ShowSpikeMarkers = false;
+                SpikeColor = Brushes.Orange;
+                SpikeAlertSound = "Alert2.wav";
+
                 // Initialize collections
                 activeDrawings = new Dictionary<int, string[]>(256);
 
@@ -291,6 +361,11 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 volumeSMA = SMA(Volume, VolumePeriod);
                 atr = ATR(AtrPeriod);
                 atrTrailing = (AtrTrailingPeriod != AtrPeriod) ? ATR(AtrTrailingPeriod) : atr;
+                
+                // M3: Initialize volume reference indicators
+                volumeEMA = EMA(Volume, VolumePeriod);
+                volumeMAX = MAX(Volume, VolumePeriod);
+                volumeStdDevIndicator = StdDev(Volume, VolumePeriod);
             }
             else if (State == State.DataLoaded)
             {
@@ -303,6 +378,13 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 currentStopShort = new Series<double>(this, MaximumBarsLookBack.TwoHundredFiftySix);
                 signalState = new Series<int>(this, MaximumBarsLookBack.TwoHundredFiftySix);
 
+                // M3: Initialize series and collections
+                referenceVolume = new Series<double>(this, MaximumBarsLookBack.TwoHundredFiftySix);
+                spikeState = new Series<bool>(this, MaximumBarsLookBack.TwoHundredFiftySix);
+                lastBullSignalBar = new Series<int>(this, MaximumBarsLookBack.TwoHundredFiftySix);
+                lastBearSignalBar = new Series<int>(this, MaximumBarsLookBack.TwoHundredFiftySix);
+                volumeBuffer = new List<double>(VolumePeriod);
+
                 // Set stop line plot color dynamically
                 Plots[2].Brush = AtrLongStopColor;
 
@@ -310,14 +392,14 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 perfTimer = new System.Diagnostics.Stopwatch();
                 startMemory = GC.GetTotalMemory(true);
                 testStartTime = DateTime.Now;
-                Print("=== PERFORMANCE TEST STARTED (OPTIMIZED v2.5.1) ===");
+                Print("=== PERFORMANCE TEST STARTED (OPTIMIZED M3 v3.0) ===");
             }
             else if (State == State.Terminated)
             {
                 // PERFORMANCE TESTING OUTPUT
                 if (executionCount > 0)
                 {
-                    Print("=== PERFORMANCE TEST RESULTS (OPTIMIZED v2.5.1) ===");
+                    Print("=== PERFORMANCE TEST RESULTS (OPTIMIZED M3 v3.0) ===");
                     Print($"Test Duration: {(DateTime.Now - testStartTime).TotalSeconds:F2} seconds");
                     Print($"Total Bars Processed: {executionCount}");
                     Print($"Average Time per Bar: {totalExecutionTime / executionCount / 10} microseconds");
@@ -333,6 +415,15 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 currentStopLong = null;
                 currentStopShort = null;
                 signalState = null;
+                
+                // M3: Cleanup new series
+                referenceVolume = null;
+                spikeState = null;
+                lastBullSignalBar = null;
+                lastBearSignalBar = null;
+                volumeBuffer?.Clear();
+                volumeBuffer = null;
+                
                 activeDrawings?.Clear();
                 activeDrawings = null;
             }
@@ -368,6 +459,13 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 sessionBarCount++;
                 cacheValid = false; // Invalidate cache on new bar
                 stoppedOut = false; // Reset stopped out flag
+                
+                // M3: Fix debounce persistence - carry forward last signal bars
+                if (CurrentBar > 0)
+                {
+                    lastBullSignalBar[0] = lastBullSignalBar[1];
+                    lastBearSignalBar[0] = lastBearSignalBar[1];
+                }
             }
 
             // Minimum bars check
@@ -393,19 +491,33 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             UpdateATRTrailingStop();
 
             // Early exit checks with cached values
-            if (cachedVolumeSMA <= 0 || double.IsNaN(cachedVolumeSMA))
+            if (cachedReferenceVolume <= 0 || double.IsNaN(cachedReferenceVolume))
             {
                 SetPlotValues(double.NaN, double.NaN);
                 UpdateStopLinePlot();
                 CleanupBarDrawings(CurrentBar);
-
-                // END PERFORMANCE MEASUREMENT
                 RecordPerformanceMetrics(memBefore);
                 return;
             }
 
-            // Core logic with cached values
-            bool isVolumeSpike = cachedCurrentVolume >= cachedVolumeSMA * VolumeMultiplier;
+            // M3: Spike detection logic
+            bool isVolumeSpike = false;
+            switch (SpikeMode)
+            {
+                case 0: // None
+                    isVolumeSpike = true; // Always process signals
+                    break;
+                case 1: // Multiplier
+                    isVolumeSpike = cachedCurrentVolume >= cachedReferenceVolume * VolumeMultiplier;
+                    break;
+                case 2: // ZScore
+                    isVolumeSpike = Math.Abs(cachedVolumeZScore) >= ZScoreThreshold;
+                    break;
+            }
+
+            // Store spike state
+            isSpikeDetected = isVolumeSpike && SpikeMode != 0;
+            spikeState[0] = isSpikeDetected;
 
             bool isBullishStop = false;
             bool isBearishStop = false;
@@ -416,20 +528,28 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 isBullishStop = (cachedClose > cachedOpen + atrThreshold);
                 isBearishStop = (cachedClose < cachedOpen - atrThreshold);
 
+                // M3: Signal debounce mechanism
+                if (MinBarsBetweenSignals > 0)
+                {
+                    if (isBullishStop && CurrentBar - lastBullSignalBar[0] < MinBarsBetweenSignals)
+                        isBullishStop = false;
+                    if (isBearishStop && CurrentBar - lastBearSignalBar[0] < MinBarsBetweenSignals)
+                        isBearishStop = false;
+                }
+
                 // Apply ATR Trailing Filter if enabled (only affects signals, not line display)
                 if (EnableAtrTrailingFilter && CurrentBar > 2)
                 {
-                    // Only allow signals aligned with the trend
                     double currentTrend = trend[0];
                     if (currentTrend > 0.5)
-                    {
                         isBearishStop = false; // No bearish signals in uptrend
-                    }
                     else if (currentTrend < -0.5)
-                    {
                         isBullishStop = false; // No bullish signals in downtrend
-                    }
                 }
+
+                // Update last signal bars
+                if (isBullishStop) lastBullSignalBar[0] = CurrentBar;
+                if (isBearishStop) lastBearSignalBar[0] = CurrentBar;
             }
 
             // Set plot values for signals
@@ -441,27 +561,39 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             // Update stop line display (decoupled from filter)
             UpdateStopLinePlot();
 
-            // Drawing logic - optimized
-            if (isBullishStop || isBearishStop)
+            // M3: Enhanced drawing logic with spike visualization
+            if (isBullishStop || isBearishStop || (ShowSpikeMarkers && isSpikeDetected))
             {
-                ManageSignalDrawings(CurrentBar, isBullishStop, isBearishStop);
+                ManageSignalDrawings(CurrentBar, isBullishStop, isBearishStop, isSpikeDetected);
             }
             else
             {
                 CleanupBarDrawings(CurrentBar);
             }
 
-            // Alerts - optimized check
+            // M3: Enhanced alerts with spike differentiation
             if (IsFirstTickOfBar && EnableAlerts)
             {
                 int newState = isBullishStop ? 1 : (isBearishStop ? -1 : 0);
                 if (newState != 0 && CurrentBar > 0 && signalState[1] != newState)
                 {
-                    Alert($"TTWVolumeFlow_{(newState == 1 ? "Bull" : "Bear")}",
+                    bool isSpike = isSpikeDetected && (isBullishStop || isBearishStop);
+                    string alertType = isSpike ? "Spike" : "Normal";
+                    string soundFile = isSpike ? SpikeAlertSound : AlertSound;
+                    
+                    Alert($"TTWVolumeFlow_{alertType}_{(newState == 1 ? "Bull" : "Bear")}_{CurrentBar}",
                           Priority.Medium,
-                          $"TTWVolumeFlow {(newState == 1 ? "Bullish" : "Bearish")} Signal",
-                          AlertSound, 0, null, null);
+                          $"TTWVolumeFlow {alertType} {(newState == 1 ? "Bullish" : "Bearish")} Signal",
+                          soundFile, 0, null, null);
                 }
+                
+                // Spike-only alerts
+                if (ShowSpikeMarkers && isSpikeDetected && !isBullishStop && !isBearishStop)
+                {
+                    Alert($"TTWVolumeFlow_SpikeOnly_{CurrentBar}", Priority.Low,
+                          "TTWVolumeFlow Volume Spike Detected", SpikeAlertSound, 0, null, null);
+                }
+                
                 signalState[0] = newState;
             }
 
@@ -493,9 +625,81 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 else
                     cachedATRTrailing = cachedATR;
 
+                // M3: Update reference volume and Z-Score
+                UpdateReferenceVolume();
+                
+                // M3: Z-Score calculation using selected baseline for consistency
+                if (volumeStdDevIndicator[0] > 1e-9)
+                    cachedVolumeZScore = (cachedCurrentVolume - cachedReferenceVolume) / volumeStdDevIndicator[0];
+                else
+                    cachedVolumeZScore = 0;
+
                 cacheValid = true;
                 lastBarCached = CurrentBar;
             }
+        }
+
+        private void UpdateReferenceVolume()
+        {
+            switch (VolumeRefType)
+            {
+                case 0: // SMA
+                    cachedReferenceVolume = volumeSMA[0];
+                    break;
+                case 1: // EMA
+                    cachedReferenceVolume = volumeEMA[0];
+                    break;
+                case 2: // Highest
+                    cachedReferenceVolume = volumeMAX[0];
+                    break;
+                case 3: // TrimmedMean
+                    cachedReferenceVolume = CalculateTrimmedMean();
+                    break;
+                case 4: // Median
+                    cachedReferenceVolume = CalculateMedian();
+                    break;
+                default:
+                    cachedReferenceVolume = volumeSMA[0];
+                    break;
+            }
+            referenceVolume[0] = cachedReferenceVolume;
+        }
+
+
+        private double CalculateTrimmedMean()
+        {
+            if (CurrentBar < VolumePeriod) return volumeSMA[0];
+            
+            volumeBuffer.Clear();
+            for (int i = 0; i < VolumePeriod; i++)
+                volumeBuffer.Add(Volume[i]);
+            
+            volumeBuffer.Sort();
+            int trimCount = (int)(VolumePeriod * 0.1);  // Remove top/bottom 10%
+            double sum = 0;
+            int count = VolumePeriod - (2 * trimCount);
+            
+            for (int i = trimCount; i < VolumePeriod - trimCount; i++)
+                sum += volumeBuffer[i];
+            
+            return count > 0 ? sum / count : volumeSMA[0];
+        }
+
+        private double CalculateMedian()
+        {
+            if (CurrentBar < VolumePeriod) return volumeSMA[0];
+            
+            volumeBuffer.Clear();
+            for (int i = 0; i < VolumePeriod; i++)
+                volumeBuffer.Add(Volume[i]);
+            
+            volumeBuffer.Sort();
+            int mid = VolumePeriod / 2;
+            
+            if (VolumePeriod % 2 == 0)
+                return (volumeBuffer[mid - 1] + volumeBuffer[mid]) / 2;
+            else
+                return volumeBuffer[mid];
         }
 
         private void UpdateATRTrailingStop()
@@ -593,7 +797,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
             Values[1][0] = bear;
         }
 
-        private void ManageSignalDrawings(int barIndex, bool isBullish, bool isBearish)
+        private void ManageSignalDrawings(int barIndex, bool isBullish, bool isBearish, bool isSpike)
         {
             string[] tags = GetOrCreateDrawingTags(barIndex);
 
@@ -602,11 +806,20 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 double symbolY = cachedLow - (cachedBarHeight * ArrowOffsetFactor);
                 DrawOptimizedSymbol(tags[0], true, symbolY, BullishColor);
 
+                // M3: Draw spike marker if enabled
+                if (ShowSpikeMarkers && isSpike)
+                {
+                    double spikeY = symbolY - (cachedBarHeight * 0.1);
+                    Draw.Diamond(this, tags[4], false, 0, spikeY, SpikeColor);
+                }
+
                 if (ShowLabel)
                 {
                     double labelY = symbolY - (cachedBarHeight * VolumeOffsetFactor);
-                    double ratio = cachedVolumeSMA > 0 ? cachedCurrentVolume / cachedVolumeSMA : 0.0;
-                    string text = $"Vol: {cachedCurrentVolume:N0}  (x{ratio:F2})";
+                    double ratio = cachedReferenceVolume > 0 ? cachedCurrentVolume / cachedReferenceVolume : 0.0;
+                    string text = EnableVolumeNormalization ? 
+                        $"Vol: {(cachedCurrentVolume / cachedReferenceVolume * 100):F1}%" :
+                        $"Vol: {cachedCurrentVolume:N0}  (x{ratio:F2})";
                     Draw.Text(this, tags[2], false, text, 0, labelY, 0, BullishColor, labelFont, TextAlignment.Center, null, null, 1);
                 }
             }
@@ -615,13 +828,28 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 double symbolY = cachedHigh + (cachedBarHeight * ArrowOffsetFactor);
                 DrawOptimizedSymbol(tags[1], false, symbolY, BearishColor);
 
+                // M3: Draw spike marker if enabled
+                if (ShowSpikeMarkers && isSpike)
+                {
+                    double spikeY = symbolY + (cachedBarHeight * 0.1);
+                    Draw.Diamond(this, tags[5], false, 0, spikeY, SpikeColor);
+                }
+
                 if (ShowLabel)
                 {
                     double labelY = symbolY + (cachedBarHeight * VolumeOffsetFactor);
-                    double ratio = cachedVolumeSMA > 0 ? cachedCurrentVolume / cachedVolumeSMA : 0.0;
-                    string text = $"Vol: {cachedCurrentVolume:N0}  (x{ratio:F2})";
+                    double ratio = cachedReferenceVolume > 0 ? cachedCurrentVolume / cachedReferenceVolume : 0.0;
+                    string text = EnableVolumeNormalization ? 
+                        $"Vol: {(cachedCurrentVolume / cachedReferenceVolume * 100):F1}%" :
+                        $"Vol: {cachedCurrentVolume:N0}  (x{ratio:F2})";
                     Draw.Text(this, tags[3], false, text, 0, labelY, 0, BearishColor, labelFont, TextAlignment.Center, null, null, 1);
                 }
+            }
+            else if (ShowSpikeMarkers && isSpike)
+            {
+                // Spike-only marker (no signal)
+                double spikeY = (cachedHigh + cachedLow) / 2;
+                Draw.Diamond(this, tags[4], false, 0, spikeY, SpikeColor);
             }
         }
 
@@ -634,7 +862,9 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                     $"{BULL_SIGNAL}_{barIndex}",
                     $"{BEAR_SIGNAL}_{barIndex}",
                     $"{BULL_LABEL}_{barIndex}",
-                    $"{BEAR_LABEL}_{barIndex}"
+                    $"{BEAR_LABEL}_{barIndex}",
+                    $"{SPIKE_BULL}_{barIndex}",
+                    $"{SPIKE_BEAR}_{barIndex}"
                 };
                 activeDrawings[barIndex] = tags;
             }
