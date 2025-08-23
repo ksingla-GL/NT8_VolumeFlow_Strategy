@@ -325,7 +325,7 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 LabelFontSize = 12;
                 LabelFontBold = true;
 
-                EnableAtrTrailingFilter = true;  // Default to true per client request
+                EnableAtrTrailingFilter = true;  // Changed default to false
                 AtrTrailingPeriod = 20;    // Client specified default
                 AtrTrailingMultiplier = 3.5;   // Client specified default
                 ShowStopLine = true;
@@ -338,13 +338,13 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 EnableAlerts = false;
                 AlertSound = "Alert1.wav";
 
-                // M3 Defaults (backward compatible)
+                // M3 Defaults 
                 VolumeRefType = 0;  // SMA - Keep SMA for output parity
-                SpikeMode = 1;  // Multiplier - Keep existing logic
+                SpikeMode = 2;  // Z-Score - More sensitive detection
                 ZScoreThreshold = 2.5;
-                EnableVolumeNormalization = false;
+                EnableVolumeNormalization = true;  // Enable normalization by default
                 MinBarsBetweenSignals = 0;  // Disabled by default
-                ShowSpikeMarkers = false;
+                ShowSpikeMarkers = true;  // Show spike markers by default
                 SpikeColor = Brushes.Orange;
                 SpikeAlertSound = "Alert2.wav";
 
@@ -457,7 +457,6 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 if (Bars.IsFirstBarOfSession)
                     sessionBarCount = 0;
                 sessionBarCount++;
-                cacheValid = false; // Invalidate cache on new bar
                 stoppedOut = false; // Reset stopped out flag
                 
                 // M3: Fix debounce persistence - carry forward last signal bars
@@ -467,6 +466,9 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                     lastBearSignalBar[0] = lastBearSignalBar[1];
                 }
             }
+            
+            // CRITICAL FIX: Force cache invalidation for real-time updates
+            cacheValid = false;
 
             // Minimum bars check
             int requiredBars = Math.Max(VolumePeriod, Math.Max(AtrPeriod, AtrTrailingPeriod));
@@ -484,14 +486,16 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 return;
             }
 
-            // Cache values once per bar
+            // CRITICAL FIX: Update cached values on EVERY tick for real-time responsiveness
             UpdateCachedValues();
 
             // ALWAYS calculate ATR Trailing Stop (for the line display)
             UpdateATRTrailingStop();
 
-            // Early exit checks with cached values
-            if (cachedReferenceVolume <= 0 || double.IsNaN(cachedReferenceVolume))
+            // Early exit checks with cached values - ENHANCED NULL/NaN GUARDS
+            if (cachedReferenceVolume <= 0 || double.IsNaN(cachedReferenceVolume) || 
+                double.IsInfinity(cachedReferenceVolume) || cachedCurrentVolume <= 0 || 
+                double.IsNaN(cachedCurrentVolume) || double.IsInfinity(cachedCurrentVolume))
             {
                 SetPlotValues(double.NaN, double.NaN);
                 UpdateStopLinePlot();
@@ -507,11 +511,14 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
                 case 0: // None
                     isVolumeSpike = true; // Always process signals
                     break;
-                case 1: // Multiplier
-                    isVolumeSpike = cachedCurrentVolume >= cachedReferenceVolume * VolumeMultiplier;
+                case 1: // Multiplier - ENHANCED SAFEGUARDS
+                    isVolumeSpike = (cachedReferenceVolume > 0 && !double.IsNaN(cachedReferenceVolume) && 
+                                   cachedCurrentVolume > 0 && !double.IsNaN(cachedCurrentVolume) &&
+                                   cachedCurrentVolume >= cachedReferenceVolume * VolumeMultiplier);
                     break;
-                case 2: // ZScore
-                    isVolumeSpike = Math.Abs(cachedVolumeZScore) >= ZScoreThreshold;
+                case 2: // ZScore - ENHANCED SAFEGUARDS
+                    isVolumeSpike = (!double.IsNaN(cachedVolumeZScore) && !double.IsInfinity(cachedVolumeZScore) &&
+                                   Math.Abs(cachedVolumeZScore) >= ZScoreThreshold);
                     break;
             }
 
@@ -605,38 +612,36 @@ namespace NinjaTrader.NinjaScript.Indicators.TTW
 
         private void UpdateCachedValues()
         {
-            if (!cacheValid || lastBarCached != CurrentBar)
-            {
-                cachedVolumeSMA = volumeSMA[0];
-                cachedATR = atr[0];
-                cachedCurrentVolume = Volume[0];
-                cachedOpen = Open[0];
-                cachedClose = Close[0];
-                cachedHigh = High[0];
-                cachedLow = Low[0];
+            // CRITICAL FIX: Always update for real-time responsiveness (cache disabled)
+            cachedVolumeSMA = volumeSMA[0];
+            cachedATR = atr[0];
+            cachedCurrentVolume = Volume[0];
+            cachedOpen = Open[0];
+            cachedClose = Close[0];
+            cachedHigh = High[0];
+            cachedLow = Low[0];
 
-                // Calculate bar height once with fallback
-                cachedBarHeight = cachedHigh - cachedLow;
-                if (cachedBarHeight <= TickSize * 0.5)
-                    cachedBarHeight = TickSize * 2.0;
+            // Calculate bar height once with fallback
+            cachedBarHeight = cachedHigh - cachedLow;
+            if (cachedBarHeight <= TickSize * 0.5)
+                cachedBarHeight = TickSize * 2.0;
 
-                if (atrTrailing != atr)
-                    cachedATRTrailing = atrTrailing[0];
-                else
-                    cachedATRTrailing = cachedATR;
+            if (atrTrailing != atr)
+                cachedATRTrailing = atrTrailing[0];
+            else
+                cachedATRTrailing = cachedATR;
 
-                // M3: Update reference volume and Z-Score
-                UpdateReferenceVolume();
-                
-                // M3: Z-Score calculation using selected baseline for consistency
-                if (volumeStdDevIndicator[0] > 1e-9)
-                    cachedVolumeZScore = (cachedCurrentVolume - cachedReferenceVolume) / volumeStdDevIndicator[0];
-                else
-                    cachedVolumeZScore = 0;
+            // M3: Update reference volume and Z-Score with NULL guards
+            UpdateReferenceVolume();
+            
+            // M3: Z-Score calculation using selected baseline for consistency
+            if (volumeStdDevIndicator[0] > 1e-9 && !double.IsNaN(volumeStdDevIndicator[0]))
+                cachedVolumeZScore = (cachedCurrentVolume - cachedReferenceVolume) / volumeStdDevIndicator[0];
+            else
+                cachedVolumeZScore = 0;
 
-                cacheValid = true;
-                lastBarCached = CurrentBar;
-            }
+            cacheValid = true;
+            lastBarCached = CurrentBar;
         }
 
         private void UpdateReferenceVolume()
@@ -947,7 +952,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (cacheTTWVolumeFlowOptimized != null)
                 for (int idx = 0; idx < cacheTTWVolumeFlowOptimized.Length; idx++)
-                    if (cacheTTWVolumeFlowOptimized[idx] != null && cacheTTWVolumeFlowOptimized[idx].VolumeMultiplier == volumeMultiplier && cacheTTWVolumeFlowOptimized[idx].VolumePeriod == volumePeriod && cacheTTWVolumeFlowOptimized[idx].AtrPeriod == atrPeriod && cacheTTWVolumeFlowOptimized[idx].AtrMultiplier == atrMultiplier && cacheTTWVolumeFlowOptimized[idx].ArrowOffsetFactor == arrowOffsetFactor && cacheTTWVolumeFlowOptimized[idx].VolumeOffsetFactor == volumeOffsetFactor && cacheTTWVolumeFlowOptimized[idx].ShowLabel == showLabel && cacheTTWVolumeFlowOptimized[idx].SymbolType == symbolType && cacheTTWVolumeFlowOptimized[idx].SymbolSize == symbolSize && cacheTTWVolumeFlowOptimized[idx].BullishColor == bullishColor && cacheTTWVolumeFlowOptimized[idx].BearishColor == bearishColor && cacheTTWVolumeFlowOptimized[idx].LabelFontFamily == labelFontFamily && cacheTTWVolumeFlowOptimized[idx].LabelFontSize == labelFontSize && cacheTTWVolumeFlowOptimized[idx].LabelFontBold == labelFontBold && cacheTTWVolumeFlowOptimized[idx].EnableAtrTrailingFilter == enableAtrTrailingFilter && cacheTTWVolumeFlowOptimized[idx].AtrTrailingPeriod == atrTrailingPeriod && cacheTTWVolumeFlowOptimized[idx].AtrTrailingMultiplier == atrTrailingMultiplier && cacheTTWVolumeFlowOptimized[idx].ShowStopLine == showStopLine && cacheTTWVolumeFlowOptimized[idx].AtrLongStopColor == atrLongStopColor && cacheTTWVolumeFlowOptimized[idx].AtrShortStopColor == atrShortStopColor && cacheTTWVolumeFlowOptimized[idx].ProcessSecondarySeries == processSecondarySeries && cacheTTWVolumeFlowOptimized[idx].IgnoreFirstBarsOfSession == ignoreFirstBarsOfSession && cacheTTWVolumeFlowOptimized[idx].EnableAlerts == enableAlerts && cacheTTWVolumeFlowOptimized[idx].AlertSound == alertSound && cacheTTWVolumeFlowOptimized[idx].EqualsInput(input))
+                    if (cacheTTWVolumeFlowOptimized[idx] != null && cacheTTWVolumeFlowOptimized[idx].VolumeMultiplier == volumeMultiplier && cacheTTWVolumeFlowOptimized[idx].VolumePeriod == volumePeriod && cacheTTWVolumeFlowOptimized[idx].AtrPeriod == atrPeriod && cacheTTWVolumeFlowOptimized[idx].AtrMultiplier == atrMultiplier && cacheTTWVolumeFlowOptimized[idx].ArrowOffsetFactor == arrowOffsetFactor && cacheTTWVolumeFlowOptimized[idx].VolumeOffsetFactor == volumeOffsetFactor && cacheTTWVolumeFlowOptimized[idx].ShowLabel == showLabel && cacheTTWVolumeFlowOptimized[idx].SymbolType == symbolType && cacheTTWVolumeFlowOptimized[idx].SymbolSize == symbolSize && cacheTTWVolumeFlowOptimized[idx].BullishColor == bullishColor && cacheTTWVolumeFlowOptimized[idx].BearishColor == bearishColor && cacheTTWVolumeFlowOptimized[idx].LabelFontFamily == labelFontFamily && cacheTTWVolumeFlowOptimized[idx].LabelFontSize == labelFontSize && cacheTTWVolumeFlowOptimized[idx].LabelFontBold == labelFontBold && cacheTTWVolumeFlowOptimized[idx]. = enableAtrTrailingFilter && cacheTTWVolumeFlowOptimized[idx].AtrTrailingPeriod == atrTrailingPeriod && cacheTTWVolumeFlowOptimized[idx].AtrTrailingMultiplier == atrTrailingMultiplier && cacheTTWVolumeFlowOptimized[idx].ShowStopLine == showStopLine && cacheTTWVolumeFlowOptimized[idx].AtrLongStopColor == atrLongStopColor && cacheTTWVolumeFlowOptimized[idx].AtrShortStopColor == atrShortStopColor && cacheTTWVolumeFlowOptimized[idx].ProcessSecondarySeries == processSecondarySeries && cacheTTWVolumeFlowOptimized[idx].IgnoreFirstBarsOfSession == ignoreFirstBarsOfSession && cacheTTWVolumeFlowOptimized[idx].EnableAlerts == enableAlerts && cacheTTWVolumeFlowOptimized[idx].AlertSound == alertSound && cacheTTWVolumeFlowOptimized[idx].EqualsInput(input))
                         return cacheTTWVolumeFlowOptimized[idx];
             return CacheIndicator<TTW.TTWVolumeFlowOptimized>(new TTW.TTWVolumeFlowOptimized() { VolumeMultiplier = volumeMultiplier, VolumePeriod = volumePeriod, AtrPeriod = atrPeriod, AtrMultiplier = atrMultiplier, ArrowOffsetFactor = arrowOffsetFactor, VolumeOffsetFactor = volumeOffsetFactor, ShowLabel = showLabel, SymbolType = symbolType, SymbolSize = symbolSize, BullishColor = bullishColor, BearishColor = bearishColor, LabelFontFamily = labelFontFamily, LabelFontSize = labelFontSize, LabelFontBold = labelFontBold, EnableAtrTrailingFilter = enableAtrTrailingFilter, AtrTrailingPeriod = atrTrailingPeriod, AtrTrailingMultiplier = atrTrailingMultiplier, ShowStopLine = showStopLine, AtrLongStopColor = atrLongStopColor, AtrShortStopColor = atrShortStopColor, ProcessSecondarySeries = processSecondarySeries, IgnoreFirstBarsOfSession = ignoreFirstBarsOfSession, EnableAlerts = enableAlerts, AlertSound = alertSound }, input, ref cacheTTWVolumeFlowOptimized);
         }
